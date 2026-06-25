@@ -20,8 +20,16 @@ jobs:
 
     - name: Download iOS SDK
       run: |
-        curl -L https://github.com/theos/sdks/releases/download/master/iPhoneOS16.5.sdk.tar.xz -o sdk.tar.xz
-        tar -xf sdk.tar.xz -C $HOME/theos/sdks/
+        curl -L https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz -o sdk.tar.xz
+        file sdk.tar.xz
+        tar -xf sdk.tar.xz -C $HOME/theos/sdks/ || true
+        ls $HOME/theos/sdks/
+
+    - name: Download SDK fallback
+      if: failure()
+      run: |
+        curl -L https://github.com/xybp888/iOS-SDKs/releases/download/v2.0/iPhoneOS16.5.sdk.tar.xz -o sdk2.tar.xz
+        tar -xf sdk2.tar.xz -C $HOME/theos/sdks/
 
     - name: Build package
       run: |
