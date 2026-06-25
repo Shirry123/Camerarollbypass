@@ -1,0 +1,12 @@
+Package: com.yourname.camerarollbypass
+Name: CameraRollBypass (Reddit)
+Version: 1.1.0
+Architecture: iphoneos-arm64
+Description: Broken camera fix for Reddit — tap gallery button (bottom left) on any verification/camera screen to use camera roll instead.
+Maintainer: YourName
+Author: YourName
+Section: Tweaks
+Depends: mobilesubstrate
+Filter:
+  Bundles:
+    - com.reddit.Reddit
