@@ -6,7 +6,6 @@
 static char kBypassButtonKey;
 static char kPickerDelegateKey;
 
-// Reddit bundle ID
 #define REDDIT_BUNDLE @"com.reddit.Reddit"
 
 @interface CRBPickerDelegate : NSObject <UIImagePickerControllerDelegate, UINavigationControllerDelegate>
@@ -15,6 +14,34 @@ static char kPickerDelegateKey;
 
 static BOOL isReddit() {
     return [[[NSBundle mainBundle] bundleIdentifier] isEqualToString:REDDIT_BUNDLE];
+}
+
+static UIWindow *getKeyWindow() {
+    UIWindow *keyWindow = nil;
+    for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]]) {
+            for (UIWindow *window in scene.windows) {
+                if (window.isKeyWindow) {
+                    keyWindow = window;
+                    break;
+                }
+            }
+        }
+    }
+    return keyWindow;
+}
+
+static BOOL hasCameraLayer(UIView *view, int depth) {
+    if (depth > 10) return NO;
+    for (CALayer *layer in view.layer.sublayers) {
+        if ([NSStringFromClass([layer class]) containsString:@"AVCapture"]) return YES;
+    }
+    for (UIView *sub in view.subviews) {
+        NSString *subcls = NSStringFromClass([sub class]);
+        if ([subcls containsString:@"Preview"] || [subcls containsString:@"Camera"]) return YES;
+        if (hasCameraLayer(sub, depth + 1)) return YES;
+    }
+    return NO;
 }
 
 static void injectBypassButton(UIViewController *vc) {
@@ -32,7 +59,6 @@ static void injectBypassButton(UIViewController *vc) {
     btn.clipsToBounds = YES;
     btn.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.92];
 
-    // Pulse animation to draw attention
     CABasicAnimation *pulse = [CABasicAnimation animationWithKeyPath:@"opacity"];
     pulse.fromValue = @1.0;
     pulse.toValue = @0.5;
@@ -56,7 +82,6 @@ static void injectBypassButton(UIViewController *vc) {
     hint.userInteractionEnabled = NO;
     [btn addSubview:hint];
 
-    // Show last photo as thumbnail
     PHFetchOptions *opts = [PHFetchOptions new];
     opts.sortDescriptors = @[[NSSortDescriptor sortDescriptorWithKey:@"creationDate" ascending:NO]];
     opts.fetchLimit = 1;
@@ -87,31 +112,23 @@ static void injectBypassButton(UIViewController *vc) {
     [view bringSubviewToFront:btn];
     objc_setAssociatedObject(view, &kBypassButtonKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    NSLog(@"[CameraRollBypass] Injected into Reddit VC: %@", NSStringFromClass([vc class]));
+    NSLog(@"[CameraRollBypass] Injected into: %@", NSStringFromClass([vc class]));
 }
 
 static BOOL isCameraRelatedClass(NSString *cls) {
     NSArray *keywords = @[
-        // Generic camera keywords
         @"Camera", @"Capture", @"Preview", @"Scan", @"Selfie",
         @"Face", @"Liveness", @"Verify", @"Identity",
-        // Reddit specific — these show up in Reddit's verification SDK
-        @"CameraViewController", @"PhotoCapture", @"IDCapture",
-        @"VerificationCamera", @"AccountVerif", @"AgeVerif",
-        // Common KYC SDKs Reddit uses
-        @"JumioViewController", @"JMCameraVC",          // Jumio
-        @"OnfidoCameraVC", @"OnfidoCapture",            // Onfido  
-        @"IDNowCaptureVC",                               // IDnow
-        @"Persona", @"PersonaInquiry",                   // Persona
-        @"StripeIdentityVC", @"STPIdentityVC",           // Stripe Identity
+        @"JumioViewController", @"JMCameraVC",
+        @"OnfidoCameraVC", @"OnfidoCapture",
+        @"Persona", @"PersonaInquiry",
+        @"StripeIdentityVC", @"STPIdentityVC",
     ];
     for (NSString *kw in keywords) {
         if ([cls containsString:kw]) return YES;
     }
     return NO;
 }
-
-// ── Main hook ──────────────────────────────────────────────────────────────
 
 %hook UIViewController
 
@@ -120,42 +137,23 @@ static BOOL isCameraRelatedClass(NSString *cls) {
     if (!isReddit()) return;
 
     NSString *cls = NSStringFromClass([self class]);
+    UIViewController *selfVC = self;
 
-    // Direct class name match
     if (isCameraRelatedClass(cls)) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            injectBypassButton(self);
+            injectBypassButton(selfVC);
         });
         return;
     }
 
-    // Scan subview layers for AVCaptureVideoPreviewLayer
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if ([self crb_hasCameraLayer:self.view depth:0]) {
-            injectBypassButton(self);
+        if (hasCameraLayer(selfVC.view, 0)) {
+            injectBypassButton(selfVC);
         }
     });
 }
 
-%new
-- (BOOL)crb_hasCameraLayer:(UIView *)view depth:(int)d {
-    if (d > 10) return NO;
-    // Check layers
-    for (CALayer *layer in view.layer.sublayers) {
-        if ([NSStringFromClass([layer class]) containsString:@"AVCapture"]) return YES;
-    }
-    // Check subview class names
-    for (UIView *sub in view.subviews) {
-        NSString *subcls = NSStringFromClass([sub class]);
-        if ([subcls containsString:@"Preview"] || [subcls containsString:@"Camera"]) return YES;
-        if ([self crb_hasCameraLayer:sub depth:d+1]) return YES;
-    }
-    return NO;
-}
-
 %end
-
-// ── Hook AVCaptureSession to detect black/broken camera ───────────────────
 
 %hook AVCaptureSession
 
@@ -163,11 +161,11 @@ static BOOL isCameraRelatedClass(NSString *cls) {
     %orig;
     if (!isReddit()) return;
 
+    AVCaptureSession *session = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (!self.isRunning) {
-            // Session failed to start = broken camera
-            // Find topmost VC
-            UIViewController *top = [UIApplication sharedApplication].keyWindow.rootViewController;
+        if (!session.isRunning) {
+            UIWindow *keyWindow = getKeyWindow();
+            UIViewController *top = keyWindow.rootViewController;
             while (top.presentedViewController) top = top.presentedViewController;
             if (top.navigationController) top = top.navigationController.topViewController;
             injectBypassButton(top);
@@ -176,8 +174,6 @@ static BOOL isCameraRelatedClass(NSString *cls) {
 }
 
 %end
-
-// ── Picker delegate ───────────────────────────────────────────────────────
 
 @implementation CRBPickerDelegate
 
@@ -197,7 +193,6 @@ static BOOL isCameraRelatedClass(NSString *cls) {
                 [vc presentViewController:alert animated:YES completion:nil];
                 return;
             }
-
             UIImagePickerController *picker = [UIImagePickerController new];
             picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
             picker.mediaTypes = @[@"public.image"];
@@ -214,54 +209,21 @@ static BOOL isCameraRelatedClass(NSString *cls) {
     UIImage *img = info[UIImagePickerControllerOriginalImage];
     [picker dismissViewControllerAnimated:YES completion:^{
         if (!img || !self.targetVC) return;
-
-        // 1. Post notification (in case Reddit or SDK listens)
         [[NSNotificationCenter defaultCenter] postNotificationName:@"CRBImageSelected"
                                                             object:img
                                                           userInfo:@{@"image": img}];
-
-        // 2. Try to call Reddit/SDK delegate methods with the image
-        [self tryInjectIntoRedditSDK:img vc:self.targetVC];
-
-        // 3. Fallback: fill any large UIImageView in the view hierarchy
         [self fillImageViews:img inView:self.targetVC.view];
-
         NSLog(@"[CameraRollBypass] Photo injected: %.0f×%.0f", img.size.width, img.size.height);
     }];
-}
-
-- (void)tryInjectIntoRedditSDK:(UIImage *)img vc:(UIViewController *)vc {
-    // Try Jumio delegate pattern
-    SEL jumioSel = NSSelectorFromString(@"jumioViewController:didFinishInitializingWithError:");
-    // Try Onfido
-    SEL onfidoSel = NSSelectorFromString(@"userDidCompleteStep:withResult:");
-    // Try Stripe Identity
-    SEL stripeSel = NSSelectorFromString(@"identityVerificationSheet:didFinishWithResult:");
-
-    // Simulate a captured photo via AVCapturePhotoCaptureDelegate if available
-    for (NSString *selName in @[
-        @"photoCapture:didFinishProcessingPhoto:error:",
-        @"captureOutput:didFinishProcessingPhoto:error:",
-        @"didCaptureImage:",
-        @"didTakePhoto:",
-        @"didCapturePhoto:"
-    ]) {
-        SEL sel = NSSelectorFromString(selName);
-        if ([vc respondsToSelector:sel]) {
-            NSLog(@"[CameraRollBypass] Found SDK selector: %@", selName);
-        }
-    }
 }
 
 - (void)fillImageViews:(UIImage *)img inView:(UIView *)view {
     for (UIView *sub in view.subviews) {
         if ([sub isKindOfClass:[UIImageView class]]) {
             UIImageView *iv = (UIImageView *)sub;
-            CGFloat area = iv.bounds.size.width * iv.bounds.size.height;
-            if (area > 10000) {
+            if (iv.bounds.size.width * iv.bounds.size.height > 8000) {
                 iv.image = img;
                 iv.contentMode = UIViewContentModeScaleAspectFill;
-                NSLog(@"[CameraRollBypass] Filled UIImageView: %@", NSStringFromCGRect(iv.frame));
             }
         }
         [self fillImageViews:img inView:sub];
